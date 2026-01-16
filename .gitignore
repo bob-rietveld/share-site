@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Wrangler
+.wrangler/
+.dev.vars
+
+# Node (if added later)
+node_modules/

@@ -1,0 +1,10 @@
+name = "share-site-api"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# You'll set these after deploying:
+# wrangler secret put CF_API_TOKEN
+# wrangler secret put CF_ACCOUNT_ID
+
+[vars]
+# Non-sensitive config can go here

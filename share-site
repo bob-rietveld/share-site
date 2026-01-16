@@ -1,0 +1,191 @@
+#!/bin/bash
+
+# share-site: Deploy static sites via shared Cloudflare infrastructure
+# Users don't need their own Cloudflare account - deploys to your worker
+
+set -e
+
+# ============================================================
+# CONFIGURATION - Set your worker URL here after deploying
+# ============================================================
+WORKER_URL="${SHARE_SITE_API:-https://share-site-api.YOUR-SUBDOMAIN.workers.dev}"
+# ============================================================
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Defaults
+DIR="."
+PASSWORD=""
+PROJECT_NAME=""
+EMAILS=""
+DOMAIN=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --password|-p)
+      PASSWORD="$2"
+      shift 2
+      ;;
+    --name|-n)
+      PROJECT_NAME="$2"
+      shift 2
+      ;;
+    --emails|-e)
+      EMAILS="$2"
+      shift 2
+      ;;
+    --domain|-d)
+      DOMAIN="$2"
+      shift 2
+      ;;
+    --help|-h)
+      echo "share-site - Deploy a static site in one command"
+      echo ""
+      echo "Usage: share-site [directory] [options]"
+      echo ""
+      echo "Options:"
+      echo "  -p, --password <pass>     Add simple JS password protection"
+      echo "  -e, --emails <list>       Restrict to specific emails (comma-separated)"
+      echo "  -d, --domain <domain>     Allow all emails from domain (e.g., @company.com)"
+      echo "  -n, --name <name>         Project name (auto-generated if not provided)"
+      echo "  -h, --help                Show this help"
+      echo ""
+      echo "Examples:"
+      echo "  share-site                              # Deploy current directory"
+      echo "  share-site ./my-site                    # Deploy specific directory"
+      echo "  share-site -p secret123                 # With password"
+      echo "  share-site -e \"a@x.com,b@y.com\"         # Only these emails can access"
+      echo "  share-site -d \"@company.com\"            # Anyone @company.com can access"
+      echo ""
+      echo "Environment:"
+      echo "  SHARE_SITE_API    Override the deployment API URL"
+      exit 0
+      ;;
+    *)
+      DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+# Check worker URL is configured
+if [[ "$WORKER_URL" == *"YOUR-SUBDOMAIN"* ]]; then
+  echo -e "${RED}Error: Worker URL not configured${NC}"
+  echo ""
+  echo "Set your worker URL by either:"
+  echo "  1. Edit this script and replace YOUR-SUBDOMAIN"
+  echo "  2. Set environment variable: export SHARE_SITE_API=https://your-worker.workers.dev"
+  exit 1
+fi
+
+# Check if directory exists
+if [[ ! -d "$DIR" ]]; then
+  echo -e "${RED}Error: Directory '$DIR' not found${NC}"
+  exit 1
+fi
+
+# Check for required tools
+if ! command -v zip &> /dev/null; then
+  echo -e "${RED}Error: 'zip' command not found. Please install it.${NC}"
+  exit 1
+fi
+
+if ! command -v curl &> /dev/null; then
+  echo -e "${RED}Error: 'curl' command not found. Please install it.${NC}"
+  exit 1
+fi
+
+# Generate project name if not provided
+if [[ -z "$PROJECT_NAME" ]]; then
+  PROJECT_NAME="site-$(date +%s | tail -c 6)"
+fi
+
+# Create temp directory for processing
+TEMP_DIR=$(mktemp -d)
+DEPLOY_DIR="$TEMP_DIR/deploy"
+ZIP_FILE="$TEMP_DIR/site.zip"
+
+mkdir -p "$DEPLOY_DIR"
+
+# Copy files
+cp -r "$DIR"/* "$DEPLOY_DIR"/ 2>/dev/null || cp -r "$DIR"/. "$DEPLOY_DIR"/
+
+# Add password protection if requested (inject into HTML files)
+if [[ -n "$PASSWORD" ]]; then
+  echo -e "${BLUE}Adding password protection...${NC}"
+  
+  find "$DEPLOY_DIR" -name "*.html" | while read -r file; do
+    PASSWORD_SCRIPT="<script>(function(){var p=prompt('Enter password:');if(p!=='$PASSWORD'){document.body.innerHTML='<h1 style=\"font-family:sans-serif;text-align:center;margin-top:100px\">Access Denied</h1>';throw new Error('denied');}})();</script>"
+    
+    if grep -q "<head>" "$file" 2>/dev/null; then
+      sed -i.bak "s|<head>|<head>$PASSWORD_SCRIPT|" "$file" && rm -f "$file.bak"
+    elif grep -q "<body>" "$file" 2>/dev/null; then
+      sed -i.bak "s|<body>|<body>$PASSWORD_SCRIPT|" "$file" && rm -f "$file.bak"
+    else
+      echo "$PASSWORD_SCRIPT$(cat "$file")" > "$file"
+    fi
+  done
+fi
+
+# Create zip file
+echo -e "${BLUE}Packaging site...${NC}"
+cd "$DEPLOY_DIR"
+zip -r -q "$ZIP_FILE" .
+cd - > /dev/null
+
+# Upload to worker
+echo -e "${BLUE}Deploying to Cloudflare Pages...${NC}"
+echo ""
+
+RESPONSE=$(curl -s -X POST "$WORKER_URL" \
+  -H "Content-Type: application/zip" \
+  -H "X-Project-Name: $PROJECT_NAME" \
+  -H "X-Password: $PASSWORD" \
+  -H "X-Emails: $EMAILS" \
+  -H "X-Domain: $DOMAIN" \
+  --data-binary "@$ZIP_FILE")
+
+# Cleanup
+rm -rf "$TEMP_DIR"
+
+# Parse response
+if echo "$RESPONSE" | grep -q '"success":true'; then
+  URL=$(echo "$RESPONSE" | grep -oE '"url":"[^"]+"' | cut -d'"' -f4)
+  
+  echo -e "${GREEN}════════════════════════════════════════${NC}"
+  echo -e "${GREEN}✓ Site deployed successfully!${NC}"
+  echo -e "${GREEN}════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "  ${BLUE}URL:${NC} $URL"
+  
+  if [[ -n "$PASSWORD" ]]; then
+    echo -e "  ${BLUE}Password:${NC} $PASSWORD"
+  fi
+  
+  if [[ -n "$EMAILS" ]]; then
+    echo -e "  ${BLUE}Allowed emails:${NC} $EMAILS"
+  fi
+  
+  if [[ -n "$DOMAIN" ]]; then
+    echo -e "  ${BLUE}Allowed domain:${NC} $DOMAIN"
+  fi
+  
+  if [[ -n "$EMAILS" || -n "$DOMAIN" ]]; then
+    echo ""
+    echo -e "  ${CYAN}Visitors will verify via email before accessing.${NC}"
+  fi
+  
+  echo ""
+else
+  echo -e "${RED}Deployment failed${NC}"
+  echo ""
+  echo "Response: $RESPONSE"
+  exit 1
+fi
