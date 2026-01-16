@@ -3,7 +3,6 @@
 
 export default {
   async fetch(request, env) {
-    // CORS headers for CLI access
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -22,27 +21,133 @@ export default {
     }
 
     try {
-      // Get config from headers
       const projectName = request.headers.get('X-Project-Name') || `site-${Date.now().toString().slice(-6)}`;
       const password = request.headers.get('X-Password') || '';
       const emails = request.headers.get('X-Emails') || '';
       const domain = request.headers.get('X-Domain') || '';
 
-      // Get the uploaded zip file
-      const zipBuffer = await request.arrayBuffer();
-      
-      if (!zipBuffer || zipBuffer.byteLength === 0) {
-        return new Response(JSON.stringify({ error: 'No file uploaded' }), {
+      // Parse JSON payload with files
+      const payload = await request.json();
+      const files = payload.files; // Array of { path, content (base64) }
+
+      if (!files || files.length === 0) {
+        return new Response(JSON.stringify({ error: 'No files provided' }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
 
-      // Deploy to Cloudflare Pages via API
-      const formData = new FormData();
-      formData.append('file', new Blob([zipBuffer], { type: 'application/zip' }));
+      // Ensure project exists
+      await ensureProject(env, projectName);
 
-      // Create or update the Pages project
+      // Step 1: Get upload token
+      const tokenResponse = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects/${projectName}/upload-token`,
+        {
+          headers: { 'Authorization': `Bearer ${env.CF_API_TOKEN}` }
+        }
+      );
+
+      const tokenResult = await tokenResponse.json();
+      if (!tokenResponse.ok) {
+        return new Response(JSON.stringify({
+          error: 'Failed to get upload token',
+          details: tokenResult
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const uploadToken = tokenResult.result.jwt;
+
+      // Process files - calculate hashes and prepare for upload
+      const manifest = {};
+      const uploadPayload = [];
+      const hashes = [];
+
+      for (const file of files) {
+        const path = file.path.startsWith('/') ? file.path : '/' + file.path;
+        const content = file.content; // Already base64
+
+        // Decode to get raw bytes for hashing
+        const binaryString = atob(content);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Hash using SHA-256 (truncated to 32 hex chars like MD5)
+        const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+        const hashArray = new Uint8Array(hashBuffer);
+        const hash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
+
+        manifest[path] = hash;
+        hashes.push(hash);
+
+        // Determine content type
+        const contentType = getContentType(path);
+
+        uploadPayload.push({
+          key: hash,
+          value: content,
+          metadata: { contentType },
+          base64: true
+        });
+      }
+
+      // Step 2: Upload files
+      const uploadResponse = await fetch(
+        'https://api.cloudflare.com/client/v4/pages/assets/upload',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${uploadToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(uploadPayload)
+        }
+      );
+
+      if (!uploadResponse.ok) {
+        const uploadError = await uploadResponse.text();
+        return new Response(JSON.stringify({
+          error: 'File upload failed',
+          details: uploadError
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Step 3: Register hashes
+      const upsertResponse = await fetch(
+        'https://api.cloudflare.com/client/v4/pages/assets/upsert-hashes',
+        {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${uploadToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ hashes })
+        }
+      );
+
+      if (!upsertResponse.ok) {
+        const upsertError = await upsertResponse.text();
+        return new Response(JSON.stringify({
+          error: 'Hash registration failed',
+          details: upsertError
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Step 4: Create deployment with manifest
+      const manifestFormData = new FormData();
+      manifestFormData.append('manifest', JSON.stringify(manifest));
+
       const deployResponse = await fetch(
         `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects/${projectName}/deployments`,
         {
@@ -50,68 +155,16 @@ export default {
           headers: {
             'Authorization': `Bearer ${env.CF_API_TOKEN}`,
           },
-          body: formData
+          body: manifestFormData
         }
       );
 
-      let deployResult = await deployResponse.json();
+      const deployResult = await deployResponse.json();
 
-      // If project doesn't exist, create it first
-      if (!deployResponse.ok && deployResult.errors?.[0]?.code === 8000007) {
-        // Create project
-        const createResponse = await fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${env.CF_API_TOKEN}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              name: projectName,
-              production_branch: 'main'
-            })
-          }
-        );
-
-        if (!createResponse.ok) {
-          const createError = await createResponse.json();
-          return new Response(JSON.stringify({ 
-            error: 'Failed to create project', 
-            details: createError 
-          }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
-        }
-
-        // Retry deployment
-        const retryResponse = await fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects/${projectName}/deployments`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${env.CF_API_TOKEN}`,
-            },
-            body: formData
-          }
-        );
-
-        deployResult = await retryResponse.json();
-        
-        if (!retryResponse.ok) {
-          return new Response(JSON.stringify({ 
-            error: 'Deployment failed', 
-            details: deployResult 
-          }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          });
-        }
-      } else if (!deployResponse.ok) {
-        return new Response(JSON.stringify({ 
-          error: 'Deployment failed', 
-          details: deployResult 
+      if (!deployResponse.ok) {
+        return new Response(JSON.stringify({
+          error: 'Deployment creation failed',
+          details: deployResult
         }), {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -119,7 +172,7 @@ export default {
       }
 
       const url = `https://${projectName}.pages.dev`;
-      
+
       // Set up Cloudflare Access if emails/domain specified
       let accessSetup = null;
       if (emails || domain) {
@@ -142,9 +195,10 @@ export default {
       });
 
     } catch (error) {
-      return new Response(JSON.stringify({ 
-        error: 'Internal error', 
-        message: error.message 
+      return new Response(JSON.stringify({
+        error: 'Internal error',
+        message: error.message,
+        stack: error.stack
       }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -153,53 +207,107 @@ export default {
   }
 };
 
-// Set up Cloudflare Access for email-based auth
+function getContentType(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  const types = {
+    'html': 'text/html',
+    'css': 'text/css',
+    'js': 'application/javascript',
+    'json': 'application/json',
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'svg': 'image/svg+xml',
+    'ico': 'image/x-icon',
+    'woff': 'font/woff',
+    'woff2': 'font/woff2',
+    'ttf': 'font/ttf',
+    'eot': 'application/vnd.ms-fontobject',
+    'txt': 'text/plain',
+    'xml': 'application/xml',
+    'pdf': 'application/pdf',
+    'webp': 'image/webp',
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'mp3': 'audio/mpeg',
+    'wav': 'audio/wav',
+  };
+  return types[ext] || 'application/octet-stream';
+}
+
+async function ensureProject(env, projectName) {
+  const checkResponse = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects/${projectName}`,
+    {
+      headers: { 'Authorization': `Bearer ${env.CF_API_TOKEN}` }
+    }
+  );
+
+  if (checkResponse.status === 404) {
+    const createResponse = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/pages/projects`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.CF_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: projectName,
+          production_branch: 'main'
+        })
+      }
+    );
+
+    if (!createResponse.ok) {
+      const error = await createResponse.json();
+      throw new Error(`Failed to create project: ${JSON.stringify(error)}`);
+    }
+  }
+}
+
 async function setupAccess(env, projectName, emails, domain) {
   const appDomain = `${projectName}.pages.dev`;
-  
-  // Build include rules
+
   const include = [];
-  
+
   if (emails) {
     const emailList = emails.split(',').map(e => e.trim());
     for (const email of emailList) {
       include.push({ email: { email: email } });
     }
   }
-  
+
   if (domain) {
     const cleanDomain = domain.replace(/^@/, '');
     include.push({ email_domain: { domain: cleanDomain } });
   }
 
-  // Check if app already exists
   const listResponse = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps`,
     {
       headers: { 'Authorization': `Bearer ${env.CF_API_TOKEN}` }
     }
   );
-  
+
   const listResult = await listResponse.json();
-  const existingApp = listResult.result?.find(app => 
+  const existingApp = listResult.result?.find(app =>
     app.domain === appDomain || app.name === projectName
   );
 
   if (existingApp) {
-    // Update existing app's policy
-    // First get existing policies
     const policiesResponse = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${existingApp.id}/policies`,
       {
         headers: { 'Authorization': `Bearer ${env.CF_API_TOKEN}` }
       }
     );
-    
+
     const policiesResult = await policiesResponse.json();
     const existingPolicy = policiesResult.result?.[0];
 
     if (existingPolicy) {
-      // Update policy
       await fetch(
         `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${existingApp.id}/policies/${existingPolicy.id}`,
         {
@@ -220,7 +328,6 @@ async function setupAccess(env, projectName, emails, domain) {
     return { status: 'updated', appId: existingApp.id };
   }
 
-  // Create new Access application
   const createAppResponse = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps`,
     {
@@ -240,14 +347,13 @@ async function setupAccess(env, projectName, emails, domain) {
   );
 
   const appResult = await createAppResponse.json();
-  
+
   if (!createAppResponse.ok) {
     return { status: 'failed', error: appResult };
   }
 
   const appId = appResult.result.id;
 
-  // Create access policy
   const createPolicyResponse = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${appId}/policies`,
     {

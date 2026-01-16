@@ -8,7 +8,7 @@ set -e
 # ============================================================
 # CONFIGURATION - Set your worker URL here after deploying
 # ============================================================
-WORKER_URL="${SHARE_SITE_API:-https://share-site-api.bob.workers.dev}"
+WORKER_URL="${SHARE_SITE_API:-https://share-site-api.bob-rietveld.workers.dev}"
 # ============================================================
 
 # Colors
@@ -92,13 +92,13 @@ if [[ ! -d "$DIR" ]]; then
 fi
 
 # Check for required tools
-if ! command -v zip &> /dev/null; then
-  echo -e "${RED}Error: 'zip' command not found. Please install it.${NC}"
+if ! command -v curl &> /dev/null; then
+  echo -e "${RED}Error: 'curl' command not found. Please install it.${NC}"
   exit 1
 fi
 
-if ! command -v curl &> /dev/null; then
-  echo -e "${RED}Error: 'curl' command not found. Please install it.${NC}"
+if ! command -v base64 &> /dev/null; then
+  echo -e "${RED}Error: 'base64' command not found. Please install it.${NC}"
   exit 1
 fi
 
@@ -110,7 +110,7 @@ fi
 # Create temp directory for processing
 TEMP_DIR=$(mktemp -d)
 DEPLOY_DIR="$TEMP_DIR/deploy"
-ZIP_FILE="$TEMP_DIR/site.zip"
+JSON_FILE="$TEMP_DIR/payload.json"
 
 mkdir -p "$DEPLOY_DIR"
 
@@ -120,10 +120,10 @@ cp -r "$DIR"/* "$DEPLOY_DIR"/ 2>/dev/null || cp -r "$DIR"/. "$DEPLOY_DIR"/
 # Add password protection if requested (inject into HTML files)
 if [[ -n "$PASSWORD" ]]; then
   echo -e "${BLUE}Adding password protection...${NC}"
-  
+
   find "$DEPLOY_DIR" -name "*.html" | while read -r file; do
     PASSWORD_SCRIPT="<script>(function(){var p=prompt('Enter password:');if(p!=='$PASSWORD'){document.body.innerHTML='<h1 style=\"font-family:sans-serif;text-align:center;margin-top:100px\">Access Denied</h1>';throw new Error('denied');}})();</script>"
-    
+
     if grep -q "<head>" "$file" 2>/dev/null; then
       sed -i.bak "s|<head>|<head>$PASSWORD_SCRIPT|" "$file" && rm -f "$file.bak"
     elif grep -q "<body>" "$file" 2>/dev/null; then
@@ -134,10 +134,38 @@ if [[ -n "$PASSWORD" ]]; then
   done
 fi
 
-# Create zip file
+# Build JSON payload with files
 echo -e "${BLUE}Packaging site...${NC}"
+
 cd "$DEPLOY_DIR"
-zip -r -q "$ZIP_FILE" .
+
+# Collect all files into an array
+FILES=()
+while IFS= read -r -d '' file; do
+  FILES+=("$file")
+done < <(find . -type f -print0)
+
+# Build JSON
+echo -n '{"files":[' > "$JSON_FILE"
+
+for i in "${!FILES[@]}"; do
+  file="${FILES[$i]}"
+  # Remove leading ./
+  FILEPATH="${file#./}"
+
+  # Base64 encode the file content
+  CONTENT=$(base64 < "$file" | tr -d '\n')
+
+  if [ $i -gt 0 ]; then
+    echo -n "," >> "$JSON_FILE"
+  fi
+
+  # Write JSON object
+  printf '{"path":"%s","content":"%s"}' "$FILEPATH" "$CONTENT" >> "$JSON_FILE"
+done
+
+echo ']}' >> "$JSON_FILE"
+
 cd - > /dev/null
 
 # Upload to worker
@@ -145,12 +173,12 @@ echo -e "${BLUE}Deploying to Cloudflare Pages...${NC}"
 echo ""
 
 RESPONSE=$(curl -s -X POST "$WORKER_URL" \
-  -H "Content-Type: application/zip" \
+  -H "Content-Type: application/json" \
   -H "X-Project-Name: $PROJECT_NAME" \
   -H "X-Password: $PASSWORD" \
   -H "X-Emails: $EMAILS" \
   -H "X-Domain: $DOMAIN" \
-  --data-binary "@$ZIP_FILE")
+  --data-binary "@$JSON_FILE")
 
 # Cleanup
 rm -rf "$TEMP_DIR"
@@ -158,30 +186,30 @@ rm -rf "$TEMP_DIR"
 # Parse response
 if echo "$RESPONSE" | grep -q '"success":true'; then
   URL=$(echo "$RESPONSE" | grep -oE '"url":"[^"]+"' | cut -d'"' -f4)
-  
+
   echo -e "${GREEN}════════════════════════════════════════${NC}"
   echo -e "${GREEN}✓ Site deployed successfully!${NC}"
   echo -e "${GREEN}════════════════════════════════════════${NC}"
   echo ""
   echo -e "  ${BLUE}URL:${NC} $URL"
-  
+
   if [[ -n "$PASSWORD" ]]; then
     echo -e "  ${BLUE}Password:${NC} $PASSWORD"
   fi
-  
+
   if [[ -n "$EMAILS" ]]; then
     echo -e "  ${BLUE}Allowed emails:${NC} $EMAILS"
   fi
-  
+
   if [[ -n "$DOMAIN" ]]; then
     echo -e "  ${BLUE}Allowed domain:${NC} $DOMAIN"
   fi
-  
+
   if [[ -n "$EMAILS" || -n "$DOMAIN" ]]; then
     echo ""
     echo -e "  ${CYAN}Visitors will verify via email before accessing.${NC}"
   fi
-  
+
   echo ""
 else
   echo -e "${RED}Deployment failed${NC}"
