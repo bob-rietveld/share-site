@@ -2,6 +2,24 @@
 
 Deploy static sites to Cloudflare Pages with one command. Users don't need their own Cloudflare account.
 
+## Install CLI
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bob-rietveld/share-site/main/install.sh | bash
+```
+
+## Usage
+
+```bash
+share-site ./my-folder                    # Deploy a folder
+share-site ./my-folder -n my-project      # With custom name
+share-site ./my-folder -p secret123       # Password protected
+share-site ./my-folder -d "@company.com"  # Cloudflare Access (email domain)
+share-site ./my-folder -e "a@b.com"       # Cloudflare Access (specific emails)
+share-site -l                             # List all projects
+share-site -D -n my-project               # Delete a project
+```
+
 ## Architecture
 
 ```
