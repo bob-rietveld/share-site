@@ -8,7 +8,7 @@ set -e
 # ============================================================
 # CONFIGURATION - Set your worker URL here after deploying
 # ============================================================
-WORKER_URL="${SHARE_SITE_API:-https://share-site-api.bob-rietveld.workers.dev}"
+WORKER_URL="${SHARE_SITE_API:-}"
 # ============================================================
 
 # Colors
@@ -90,12 +90,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check worker URL is configured
-if [[ "$WORKER_URL" == *"YOUR-SUBDOMAIN"* ]]; then
+if [[ -z "$WORKER_URL" ]]; then
   echo -e "${RED}Error: Worker URL not configured${NC}"
   echo ""
-  echo "Set your worker URL by either:"
-  echo "  1. Edit this script and replace YOUR-SUBDOMAIN"
-  echo "  2. Set environment variable: export SHARE_SITE_API=https://your-worker.workers.dev"
+  echo "Set your worker URL:"
+  echo "  export SHARE_SITE_API=https://your-worker.workers.dev"
+  echo ""
+  echo "Add to ~/.zshrc or ~/.bashrc to make permanent."
   exit 1
 fi
 
