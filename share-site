@@ -158,10 +158,31 @@ if [[ "$REGISTER_MODE" == true ]]; then
     echo -e "  ${BLUE}Username:${NC} $REGISTER_USERNAME"
     echo -e "  ${BLUE}API Key:${NC}  $API_KEY"
     echo ""
-    echo -e "${YELLOW}Save your API key! It cannot be recovered.${NC}"
-    echo ""
-    echo "Add to your shell config:"
-    echo -e "  ${CYAN}export SHARE_SITE_KEY=$API_KEY${NC}"
+
+    # Determine shell config file
+    if [[ -f "$HOME/.zshrc" ]]; then
+      SHELL_RC="$HOME/.zshrc"
+    else
+      SHELL_RC="$HOME/.bashrc"
+    fi
+
+    # Offer to save automatically
+    echo -n -e "${YELLOW}Save API key to $SHELL_RC? (Y/n): ${NC}"
+    read -r SAVE_KEY
+    if [[ "$SAVE_KEY" != "n" && "$SAVE_KEY" != "N" ]]; then
+      # Remove old key if exists
+      sed -i '' '/SHARE_SITE_KEY/d' "$SHELL_RC" 2>/dev/null || sed -i '/SHARE_SITE_KEY/d' "$SHELL_RC"
+      echo "export SHARE_SITE_KEY=\"$API_KEY\"" >> "$SHELL_RC"
+      echo -e "${GREEN}✓ API key saved to $SHELL_RC${NC}"
+      echo ""
+      echo -e "Run: ${CYAN}source $SHELL_RC${NC}"
+    else
+      echo ""
+      echo -e "${YELLOW}Save your API key! It cannot be recovered.${NC}"
+      echo ""
+      echo "Add to your shell config:"
+      echo -e "  ${CYAN}export SHARE_SITE_KEY=$API_KEY${NC}"
+    fi
     echo ""
   else
     ERROR=$(echo "$RESPONSE" | grep -oE '"error":"[^"]+"' | cut -d'"' -f4)
