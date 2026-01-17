@@ -59,7 +59,8 @@ if ! grep -q "SHARE_SITE_API" "$SHELL_RC" 2>/dev/null; then
   echo -e "${YELLOW}Enter your share-site worker URL${NC}"
   echo -e "${BLUE}(e.g., https://share-site-api.yourname.workers.dev)${NC}"
   echo ""
-  read -p "Worker URL: " WORKER_URL
+  echo -n "Worker URL: "
+  read WORKER_URL < /dev/tty
 
   if [[ -n "$WORKER_URL" ]]; then
     echo "" >> "$SHELL_RC"
@@ -78,11 +79,13 @@ fi
 if ! grep -q "SHARE_SITE_KEY" "$SHELL_RC" 2>/dev/null; then
   echo ""
   echo -e "${YELLOW}Do you have an API key? (y/n)${NC}"
-  read -p "> " HAS_KEY
+  echo -n "> "
+  read HAS_KEY < /dev/tty
 
   if [[ "$HAS_KEY" == "y" || "$HAS_KEY" == "Y" ]]; then
     echo -e "${YELLOW}Enter your API key:${NC}"
-    read -p "API Key: " API_KEY
+    echo -n "API Key: "
+    read API_KEY < /dev/tty
 
     if [[ -n "$API_KEY" ]]; then
       echo "export SHARE_SITE_KEY=\"$API_KEY\"" >> "$SHELL_RC"
