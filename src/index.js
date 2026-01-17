@@ -24,10 +24,40 @@ async function getUserByKey(env, apiKey) {
   return data; // { username: "..." } or null
 }
 
+// Hybrid authentication: try machine ID first, then API key
+async function authenticateRequest(request, env) {
+  // Try machine ID first (simplest for CLI users)
+  const machineId = request.headers.get('X-Machine-ID');
+  if (machineId) {
+    const machineUser = await getUserByMachineId(env, machineId);
+    if (machineUser) {
+      return machineUser; // { username: "..." }
+    }
+  }
+
+  // Fall back to API key (for CI/CD, scripts, unregistered machines)
+  const apiKey = request.headers.get('X-API-Key');
+  if (apiKey) {
+    const keyUser = await getUserByKey(env, apiKey);
+    if (keyUser) {
+      return keyUser;
+    }
+  }
+
+  return null;
+}
+
 // Look up user by username
 async function getUserByUsername(env, username) {
   const data = await env.USERS.get(`user:${username}`, 'json');
   return data; // { key: "...", created: "..." } or null
+}
+
+// Look up user by machine ID
+async function getUserByMachineId(env, machineId) {
+  if (!machineId) return null;
+  const data = await env.USERS.get(`machine:${machineId}`, 'json');
+  return data; // { username: "..." } or null
 }
 
 // Handle user registration
@@ -36,6 +66,7 @@ async function handleRegister(request, env, corsHeaders) {
     const body = await request.json();
     const username = (body.username || '').toLowerCase().trim();
     const registrationCode = body.registrationCode || '';
+    const machineId = body.machineId || '';
 
     // Check registration code if configured
     if (env.REGISTRATION_CODE && registrationCode !== env.REGISTRATION_CODE) {
@@ -55,6 +86,19 @@ async function handleRegister(request, env, corsHeaders) {
       });
     }
 
+    // Check if machine already has an account (one-account-per-computer)
+    if (machineId) {
+      const existingMachine = await getUserByMachineId(env, machineId);
+      if (existingMachine) {
+        return new Response(JSON.stringify({
+          error: `This computer already has an account: ${existingMachine.username}. Use 'share-site me' to check your current account.`
+        }), {
+          status: 409,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     // Check if username exists
     const existing = await getUserByUsername(env, username);
     if (existing) {
@@ -68,8 +112,13 @@ async function handleRegister(request, env, corsHeaders) {
     const apiKey = generateApiKey();
     const created = new Date().toISOString();
 
-    await env.USERS.put(`user:${username}`, JSON.stringify({ key: apiKey, created }));
+    await env.USERS.put(`user:${username}`, JSON.stringify({ key: apiKey, created, machineId }));
     await env.USERS.put(`key:${apiKey}`, JSON.stringify({ username }));
+
+    // Store machine-to-user mapping for one-account-per-computer
+    if (machineId) {
+      await env.USERS.put(`machine:${machineId}`, JSON.stringify({ username }));
+    }
 
     return new Response(JSON.stringify({
       success: true,
@@ -90,11 +139,12 @@ async function handleRegister(request, env, corsHeaders) {
 
 // Handle /me endpoint
 async function handleMe(request, env, corsHeaders) {
-  const apiKey = request.headers.get('X-API-Key');
-  const user = await getUserByKey(env, apiKey);
+  const user = await authenticateRequest(request, env);
 
   if (!user) {
-    return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+    return new Response(JSON.stringify({
+      error: 'Not authenticated. Register this machine or provide API key.'
+    }), {
       status: 401,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -355,7 +405,7 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, X-Project-Name, X-Password, X-Emails, X-Domain, X-API-Key, X-Registration-Code',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Project-Name, X-Password, X-Emails, X-Domain, X-API-Key, X-Machine-ID',
     };
 
     if (request.method === 'OPTIONS') {
@@ -372,12 +422,13 @@ export default {
       return handleMe(request, env, corsHeaders);
     }
 
-    // All other routes require authentication
-    const apiKey = request.headers.get('X-API-Key');
-    const user = await getUserByKey(env, apiKey);
+    // All other routes require authentication (hybrid: machine ID or API key)
+    const user = await authenticateRequest(request, env);
 
     if (!user) {
-      return new Response(JSON.stringify({ error: 'Authentication required. Provide X-API-Key header.' }), {
+      return new Response(JSON.stringify({
+        error: 'Authentication required. Register this machine with "share-site register <username>" or provide X-API-Key header.'
+      }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -387,7 +438,7 @@ export default {
 
     // Route: POST /uninstall - Delete account and all resources
     if (path === '/uninstall' && request.method === 'POST') {
-      return handleUninstall(request, env, corsHeaders, username, apiKey);
+      return handleUninstall(request, env, corsHeaders, username);
     }
 
     // Route: GET / - List user's projects
@@ -844,11 +895,16 @@ async function handleList(env, corsHeaders, username) {
   }
 }
 
-async function handleUninstall(request, env, corsHeaders, username, apiKey) {
+async function handleUninstall(request, env, corsHeaders, username) {
   try {
     const deletedProjects = [];
     const deletedApps = [];
     let errors = [];
+
+    // Get user record to find API key and machine ID
+    const userData = await getUserByUsername(env, username);
+    const apiKey = userData?.key;
+    const machineId = userData?.machineId;
 
     // 1. Get all user's Pages projects
     const projectsResponse = await fetch(
@@ -920,7 +976,12 @@ async function handleUninstall(request, env, corsHeaders, username, apiKey) {
 
     // 3. Delete user from KV
     await env.USERS.delete(`user:${username}`);
-    await env.USERS.delete(`key:${apiKey}`);
+    if (apiKey) {
+      await env.USERS.delete(`key:${apiKey}`);
+    }
+    if (machineId) {
+      await env.USERS.delete(`machine:${machineId}`);
+    }
 
     return new Response(JSON.stringify({
       success: true,

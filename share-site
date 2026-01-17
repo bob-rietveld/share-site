@@ -33,6 +33,44 @@ ME_MODE=false
 UNINSTALL_MODE=false
 REGISTER_USERNAME=""
 
+# Machine ID for one-account-per-computer enforcement
+CONFIG_DIR="$HOME/.share-site"
+MACHINE_ID_FILE="$CONFIG_DIR/machine-id"
+
+get_machine_id() {
+  # Create config directory if needed
+  mkdir -p "$CONFIG_DIR"
+
+  # Return existing machine ID if present
+  if [[ -f "$MACHINE_ID_FILE" ]]; then
+    cat "$MACHINE_ID_FILE"
+    return
+  fi
+
+  # Try to get hardware UUID (macOS)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    HWID=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | grep -oE '"IOPlatformUUID" = "[^"]+"' | cut -d'"' -f4)
+    if [[ -n "$HWID" ]]; then
+      echo "$HWID" > "$MACHINE_ID_FILE"
+      echo "$HWID"
+      return
+    fi
+  fi
+
+  # Try /etc/machine-id (Linux)
+  if [[ -f "/etc/machine-id" ]]; then
+    HWID=$(cat /etc/machine-id)
+    echo "$HWID" > "$MACHINE_ID_FILE"
+    echo "$HWID"
+    return
+  fi
+
+  # Generate random ID as fallback
+  HWID=$(head -c 32 /dev/urandom | xxd -p | tr -d '\n' | head -c 32)
+  echo "$HWID" > "$MACHINE_ID_FILE"
+  echo "$HWID"
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -141,6 +179,9 @@ if [[ "$REGISTER_MODE" == true ]]; then
 
   echo -e "${BLUE}Registering user: $REGISTER_USERNAME${NC}"
 
+  # Get machine ID for one-account-per-computer
+  MACHINE_ID=$(get_machine_id)
+
   # Check for registration code
   REGISTRATION_CODE=""
   if [[ -n "$SHARE_SITE_REGISTRATION_CODE" ]]; then
@@ -152,7 +193,7 @@ if [[ "$REGISTER_MODE" == true ]]; then
 
   RESPONSE=$(curl -s -X POST "$WORKER_URL/register" \
     -H "Content-Type: application/json" \
-    -d "{\"username\": \"$REGISTER_USERNAME\", \"registrationCode\": \"$REGISTRATION_CODE\"}") || true
+    -d "{\"username\": \"$REGISTER_USERNAME\", \"registrationCode\": \"$REGISTRATION_CODE\", \"machineId\": \"$MACHINE_ID\"}") || true
 
   if [[ -z "$RESPONSE" ]]; then
     echo -e "${RED}Error: No response from server${NC}"
@@ -205,18 +246,10 @@ fi
 
 # Handle me mode
 if [[ "$ME_MODE" == true ]]; then
-  if [[ -z "$API_KEY" ]]; then
-    echo -e "${RED}Error: API key not configured${NC}"
-    echo ""
-    echo "Set your API key:"
-    echo "  export SHARE_SITE_KEY=sk_your_key_here"
-    echo ""
-    echo "Or register first:"
-    echo "  share-site register <username>"
-    exit 1
-  fi
+  MACHINE_ID=$(get_machine_id)
 
   RESPONSE=$(curl -s -X GET "$WORKER_URL/me" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY")
 
   if echo "$RESPONSE" | grep -q '"success":true'; then
@@ -227,28 +260,30 @@ if [[ "$ME_MODE" == true ]]; then
     echo -e "${BLUE}Created:${NC} $CREATED"
     echo ""
   else
-    echo -e "${RED}Invalid API key${NC}"
+    echo -e "${RED}Not logged in${NC}"
+    echo ""
+    echo "Register this machine:"
+    echo "  share-site register <username>"
     exit 1
   fi
   exit 0
 fi
 
+# Get machine ID for authentication
+MACHINE_ID=$(get_machine_id)
+
 # Handle uninstall mode
 if [[ "$UNINSTALL_MODE" == true ]]; then
-  if [[ -z "$API_KEY" ]]; then
-    echo -e "${RED}Error: API key not configured${NC}"
-    echo ""
-    echo "Set your API key:"
-    echo "  export SHARE_SITE_KEY=sk_your_key_here"
-    exit 1
-  fi
-
   # Get user info first
   ME_RESPONSE=$(curl -s -X GET "$WORKER_URL/me" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY")
 
   if ! echo "$ME_RESPONSE" | grep -q '"success":true'; then
-    echo -e "${RED}Invalid API key${NC}"
+    echo -e "${RED}Not logged in${NC}"
+    echo ""
+    echo "Register this machine first:"
+    echo "  share-site register <username>"
     exit 1
   fi
 
@@ -256,6 +291,7 @@ if [[ "$UNINSTALL_MODE" == true ]]; then
 
   # Get projects for display
   LIST_RESPONSE=$(curl -s -X GET "$WORKER_URL" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY")
 
   echo ""
@@ -292,6 +328,7 @@ if [[ "$UNINSTALL_MODE" == true ]]; then
   echo -e "${BLUE}Removing cloud resources...${NC}"
 
   RESPONSE=$(curl -s -X POST "$WORKER_URL/uninstall" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY" \
     -H "Content-Type: application/json")
 
@@ -314,6 +351,14 @@ if [[ "$UNINSTALL_MODE" == true ]]; then
       sed -i '' '/SHARE_SITE_KEY/d' "$SHELL_RC" 2>/dev/null || sed -i '/SHARE_SITE_KEY/d' "$SHELL_RC"
       echo -e "${GREEN}✓ Removed API key from $SHELL_RC${NC}"
     fi
+
+    # Remove local machine ID
+    if [[ -f "$MACHINE_ID_FILE" ]]; then
+      rm -f "$MACHINE_ID_FILE"
+      echo -e "${GREEN}✓ Removed machine ID${NC}"
+    fi
+    # Remove config directory if empty
+    rmdir "$CONFIG_DIR" 2>/dev/null || true
 
     echo ""
     echo -n -e "${YELLOW}Remove CLI script from system? (y/N): ${NC}"
@@ -342,21 +387,10 @@ if [[ "$UNINSTALL_MODE" == true ]]; then
   exit 0
 fi
 
-# All other operations require API key
-if [[ -z "$API_KEY" ]]; then
-  echo -e "${RED}Error: API key not configured${NC}"
-  echo ""
-  echo "Set your API key:"
-  echo "  export SHARE_SITE_KEY=sk_your_key_here"
-  echo ""
-  echo "Or register first:"
-  echo "  share-site register <username>"
-  exit 1
-fi
-
 # Handle list mode
 if [[ "$LIST_MODE" == true ]]; then
   RESPONSE=$(curl -s -X GET "$WORKER_URL" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY")
 
   if echo "$RESPONSE" | grep -q '"success":true'; then
@@ -376,8 +410,12 @@ if [[ "$LIST_MODE" == true ]]; then
     done
     echo ""
   else
-    echo -e "${RED}Failed to list projects${NC}"
-    echo "Response: $RESPONSE"
+    ERROR=$(echo "$RESPONSE" | grep -oE '"error":"[^"]+"' | cut -d'"' -f4)
+    if [[ -n "$ERROR" ]]; then
+      echo -e "${RED}$ERROR${NC}"
+    else
+      echo -e "${RED}Failed to list projects${NC}"
+    fi
     exit 1
   fi
   exit 0
@@ -394,6 +432,7 @@ if [[ "$DELETE_MODE" == true ]]; then
 
   RESPONSE=$(curl -s -X DELETE "$WORKER_URL" \
     -H "Content-Type: application/json" \
+    -H "X-Machine-ID: $MACHINE_ID" \
     -H "X-API-Key: $API_KEY" \
     -H "X-Project-Name: $PROJECT_NAME")
 
@@ -493,6 +532,7 @@ echo ""
 
 RESPONSE=$(curl -s -X POST "$WORKER_URL" \
   -H "Content-Type: application/json" \
+  -H "X-Machine-ID: $MACHINE_ID" \
   -H "X-API-Key: $API_KEY" \
   -H "X-Project-Name: $PROJECT_NAME" \
   -H "X-Password: $PASSWORD" \
