@@ -341,10 +341,14 @@ if [[ "$ME_MODE" == true ]]; then
   if echo "$RESPONSE" | grep -q '"success":true'; then
     USERNAME=$(echo "$RESPONSE" | grep -oE '"username":"[^"]+"' | cut -d'"' -f4)
     CREATED=$(echo "$RESPONSE" | grep -oE '"created":"[^"]+"' | cut -d'"' -f4)
+    INVITE_CODE=$(echo "$RESPONSE" | grep -oE '"inviteCode":"[^"]+"' | cut -d'"' -f4)
     echo ""
     echo -e "${GREEN}Logged in as:${NC} $USERNAME"
     echo -e "${BLUE}API:${NC} $WORKER_URL"
     echo -e "${BLUE}Domain:${NC} ${USERNAME}-{project}.pages.dev"
+    if [[ -n "$INVITE_CODE" ]]; then
+      echo -e "${BLUE}Invite:${NC} $INVITE_CODE"
+    fi
     echo -e "${BLUE}Created:${NC} $CREATED"
     echo ""
   else

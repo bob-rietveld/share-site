@@ -152,10 +152,23 @@ async function handleMe(request, env, corsHeaders) {
 
   const userData = await getUserByUsername(env, user.username);
 
+  // Build invite code if REGISTRATION_CODE is set
+  let inviteCode = null;
+  if (env.REGISTRATION_CODE) {
+    const url = new URL(request.url);
+    // Extract subdomain from hostname (e.g., "share-site-api.bob-rietveld.workers.dev" -> "bob-rietveld")
+    const hostParts = url.hostname.split('.');
+    if (hostParts.length >= 3 && hostParts.slice(-2).join('.') === 'workers.dev') {
+      const subdomain = hostParts.slice(0, -2).join('.').replace(/^[^.]+\./, '');
+      inviteCode = `${subdomain}:${env.REGISTRATION_CODE}`;
+    }
+  }
+
   return new Response(JSON.stringify({
     success: true,
     username: user.username,
-    created: userData?.created
+    created: userData?.created,
+    inviteCode: inviteCode
   }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' }
   });
