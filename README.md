@@ -56,6 +56,9 @@ share-site -D -n my-project
 
 # Check who you're logged in as
 share-site me
+
+# Delete your account and all sites
+share-site uninstall
 ```
 
 ## Registration
@@ -146,11 +149,11 @@ share-site ./my-folder
 
 ### Password Protection
 
-Uses AES-256-GCM encryption with PBKDF2 key derivation (100k iterations). The password is never sent to the server - encryption happens server-side before deployment, decryption happens client-side in the browser.
+Uses AES-256-GCM encryption with PBKDF2 key derivation (100k iterations). HTML files are encrypted server-side before deployment. Visitors enter the password in their browser, where decryption happens client-side.
 
 ### Email Access Control
 
-Uses Cloudflare Access for proper authentication:
+Uses Cloudflare Access for authentication:
 - `-e "email@example.com"` - Allow specific emails
 - `-d "@company.com"` - Allow entire domain
 
@@ -158,7 +161,7 @@ Visitors verify via email code before accessing the site.
 
 ### One Account Per Computer
 
-Each machine can only have one account, tied to the hardware ID. This prevents credential sharing and simplifies authentication.
+Each machine can only have one share-site account, tied to the hardware ID. This simplifies authentication - no passwords to remember for daily use.
 
 ## Operator Setup
 
