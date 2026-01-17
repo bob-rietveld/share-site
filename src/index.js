@@ -161,6 +161,72 @@ async function handleMe(request, env, corsHeaders) {
   });
 }
 
+// Handle /key endpoint - get or regenerate API key
+async function handleKey(request, env, corsHeaders) {
+  const user = await authenticateRequest(request, env);
+
+  if (!user) {
+    return new Response(JSON.stringify({
+      error: 'Not authenticated. Register this machine or provide API key.'
+    }), {
+      status: 401,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  const username = user.username;
+  const userData = await getUserByUsername(env, username);
+
+  if (!userData) {
+    return new Response(JSON.stringify({ error: 'User not found' }), {
+      status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  // GET = show current key, POST = regenerate
+  if (request.method === 'GET') {
+    return new Response(JSON.stringify({
+      success: true,
+      username,
+      key: userData.key
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  if (request.method === 'POST') {
+    const oldKey = userData.key;
+    const newKey = generateApiKey();
+
+    // Update user record with new key
+    await env.USERS.put(`user:${username}`, JSON.stringify({
+      ...userData,
+      key: newKey
+    }));
+
+    // Delete old key mapping, create new one
+    if (oldKey) {
+      await env.USERS.delete(`key:${oldKey}`);
+    }
+    await env.USERS.put(`key:${newKey}`, JSON.stringify({ username }));
+
+    return new Response(JSON.stringify({
+      success: true,
+      username,
+      key: newKey,
+      message: 'API key regenerated. Old key is now invalid.'
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    status: 405,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
 // ============================================================
 // ENCRYPTION (PageCrypt-style AES-256-GCM)
 // ============================================================
@@ -420,6 +486,11 @@ export default {
     // Route: GET /me - Get current user info
     if (path === '/me' && request.method === 'GET') {
       return handleMe(request, env, corsHeaders);
+    }
+
+    // Route: GET/POST /key - Get or regenerate API key
+    if (path === '/key' && (request.method === 'GET' || request.method === 'POST')) {
+      return handleKey(request, env, corsHeaders);
     }
 
     // All other routes require authentication (hybrid: machine ID or API key)
