@@ -94,7 +94,22 @@ Project name: (optional, auto-generated if not provided)
 What password would you like? Or say "generate" for a random one.
 ```
 
-**If user says "generate" or similar**, generate a random password:
+**If user provides a project name**, validate it first:
+- 1-58 characters long
+- Lowercase letters, numbers, and dashes only
+- Cannot start or end with a dash
+
+**If invalid**, tell the user:
+```
+Invalid project name. Names must be:
+• 1-58 characters long
+• Lowercase letters, numbers, and dashes only
+• Cannot start or end with a dash
+
+Example: my-project-123
+```
+
+**If user says "generate" or similar for password**, generate a random password:
 ```bash
 openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 12
 ```
