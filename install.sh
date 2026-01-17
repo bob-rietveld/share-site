@@ -54,6 +54,18 @@ fi
 echo -e "${GREEN}✓ Installed to $INSTALL_DIR/$SCRIPT_NAME${NC}"
 echo ""
 
+# Skip interactive prompts in CI environments
+if [[ -n "$CI" || -n "$GITHUB_ACTIONS" || ! -t 0 ]]; then
+  echo -e "${BLUE}CI environment detected - skipping interactive setup${NC}"
+  echo -e "${GREEN}✓ Installation complete!${NC}"
+  echo ""
+  echo -e "Set these environment variables to deploy:"
+  echo -e "  ${CYAN}SHARE_SITE_API${NC} - Your worker URL"
+  echo -e "  ${CYAN}SHARE_SITE_KEY${NC} - Your API key"
+  exit 0
+fi
+
+# Interactive setup for local installs
 # Check if SHARE_SITE_API is already set
 if ! grep -q "SHARE_SITE_API" "$SHELL_RC" 2>/dev/null; then
   echo -e "${YELLOW}Enter your share-site worker URL${NC}"
