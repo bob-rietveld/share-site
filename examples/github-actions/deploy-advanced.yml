@@ -1,0 +1,138 @@
+# share-site deployment workflow (advanced)
+# Copy this file to your repo: .github/workflows/deploy.yml
+#
+# Required GitHub Secrets:
+#   SHARE_SITE_API  - Your share-site worker URL
+#   SHARE_SITE_KEY  - Your API key (get with: share-site key)
+#
+# Optional GitHub Secrets:
+#   SITE_PASSWORD   - Password protection for the site
+#   CUSTOM_DOMAIN   - Custom domain (e.g., docs.example.com)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]  # Deploy previews for PRs
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - preview
+
+# ============================================================
+# CONFIGURATION - Edit these values
+# ============================================================
+env:
+  DEPLOY_DIR: "./dist"        # Directory to deploy
+  PROJECT_NAME: "my-site"     # Base project name
+  NODE_VERSION: "20"          # Node.js version for build
+# ============================================================
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: ${{ env.DEPLOY_DIR }}
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only deploy on push to main or manual trigger
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./deploy
+
+      - name: Install share-site CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/bob-rietveld/share-site/main/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Deploy to share-site
+        env:
+          SHARE_SITE_API: ${{ secrets.SHARE_SITE_API }}
+          SHARE_SITE_KEY: ${{ secrets.SHARE_SITE_KEY }}
+        run: |
+          ARGS="./deploy -n ${{ env.PROJECT_NAME }}"
+
+          # Add password if configured
+          if [ -n "${{ secrets.SITE_PASSWORD }}" ]; then
+            ARGS="$ARGS -p ${{ secrets.SITE_PASSWORD }}"
+          fi
+
+          # Add custom domain if configured
+          if [ -n "${{ secrets.CUSTOM_DOMAIN }}" ]; then
+            ARGS="$ARGS --custom-domain ${{ secrets.CUSTOM_DOMAIN }}"
+          fi
+
+          share-site $ARGS
+
+  deploy-preview:
+    needs: build
+    runs-on: ubuntu-latest
+    # Deploy preview for PRs
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build
+          path: ./deploy
+
+      - name: Install share-site CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/bob-rietveld/share-site/main/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Deploy preview
+        id: preview
+        env:
+          SHARE_SITE_API: ${{ secrets.SHARE_SITE_API }}
+          SHARE_SITE_KEY: ${{ secrets.SHARE_SITE_KEY }}
+        run: |
+          PREVIEW_NAME="${{ env.PROJECT_NAME }}-pr-${{ github.event.number }}"
+          share-site ./deploy -n "$PREVIEW_NAME"
+          echo "preview_name=$PREVIEW_NAME" >> $GITHUB_OUTPUT
+
+      - name: Comment PR with preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const previewName = '${{ steps.preview.outputs.preview_name }}';
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Preview deployed to: https://YOUR_USERNAME-${previewName}.pages.dev`
+            });

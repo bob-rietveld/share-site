@@ -99,14 +99,49 @@ share-site key
 share-site uninstall
 ```
 
-### CI/CD Usage
+### GitHub Actions (Auto-Deploy)
 
-For automated deployments, set these environment variables:
+Deploy automatically when you push to GitHub.
+
+**1. Add workflow to your repo:**
+
+```bash
+mkdir -p .github/workflows
+curl -fsSL https://raw.githubusercontent.com/bob-rietveld/share-site/main/examples/github-actions/deploy.yml \
+  -o .github/workflows/deploy.yml
+```
+
+**2. Edit the workflow:**
+
+```yaml
+env:
+  DEPLOY_DIR: "./public"      # Your build output folder
+  PROJECT_NAME: "my-site"     # Your project name
+```
+
+**3. Add GitHub Secrets** (repo → Settings → Secrets → Actions):
+
+| Secret | Value |
+|--------|-------|
+| `SHARE_SITE_API` | Your worker URL (e.g., `https://share-site-api.bob-rietveld.workers.dev`) |
+| `SHARE_SITE_KEY` | Your API key (run `share-site key` to get it) |
+
+**4. Push to deploy:**
+
+```bash
+git push
+```
+
+See [examples/github-actions](examples/github-actions) for advanced workflows with build steps, PR previews, and more.
+
+### CI/CD (Manual)
+
+For other CI systems, set environment variables:
 
 ```bash
 export SHARE_SITE_API=https://share-site-api.example.workers.dev
 export SHARE_SITE_KEY=sk_your_api_key_here
-share-site ./dist
+share-site ./dist -n my-project
 ```
 
 Get your API key with `share-site key`.

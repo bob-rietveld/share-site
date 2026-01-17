@@ -1,0 +1,61 @@
+# share-site deployment workflow
+# Copy this file to your repo: .github/workflows/deploy.yml
+#
+# Required GitHub Secrets:
+#   SHARE_SITE_API - Your share-site worker URL
+#   SHARE_SITE_KEY - Your API key (get with: share-site key)
+#
+# Optional GitHub Secrets:
+#   SITE_PASSWORD  - Password protection for the site
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+# ============================================================
+# CONFIGURATION - Edit these values
+# ============================================================
+env:
+  DEPLOY_DIR: "./public"      # Directory to deploy (e.g., ./dist, ./build, ./public)
+  PROJECT_NAME: "my-site"     # Your project name (lowercase, dashes allowed)
+  # CUSTOM_DOMAIN: ""         # Optional: your custom domain (e.g., docs.example.com)
+# ============================================================
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Uncomment if you need to build first:
+      # - name: Setup Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '20'
+      #     cache: 'npm'
+      #
+      # - name: Install dependencies
+      #   run: npm ci
+      #
+      # - name: Build
+      #   run: npm run build
+
+      - name: Install share-site CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/bob-rietveld/share-site/main/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Deploy to share-site
+        env:
+          SHARE_SITE_API: ${{ secrets.SHARE_SITE_API }}
+          SHARE_SITE_KEY: ${{ secrets.SHARE_SITE_KEY }}
+        run: |
+          share-site ${{ env.DEPLOY_DIR }} -n ${{ env.PROJECT_NAME }}
+
+      - name: Show deployment URL
+        run: |
+          echo "Deployed to: https://${{ secrets.SHARE_SITE_API && 'your-username' }}-${{ env.PROJECT_NAME }}.pages.dev"
